@@ -3,7 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "driver/gpio.h" // Nagłówek dla obsługi GPIO
+#include "driver/gpio.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -11,28 +11,30 @@
 #include "nvs_flash.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 #define WIFI_SSID "testtest"
 #define WIFI_PASS "testtest"
-#define LED_PIN GPIO_NUM_2  // Dioda LED na pinie GPIO 2 (standardowa dla ESP32)
+#define LED_PIN GPIO_NUM_2
+#define MAX_HTTP_RESPONSE_SIZE 2048
+#define HTTP_SERVER "example.com"
 
 int retry_num = 0;
-bool wifi_connected = false;  // Flaga oznaczająca stan połączenia Wi-Fi
+bool wifi_connected = false;
+bool isFirstLoop = true;
+SemaphoreHandle_t http_semaphore = NULL;  // Semafor do kontroli wykonania HTTP request
 
-// Tworzymy zmienną semafora binarnego
-SemaphoreHandle_t wifi_semaphore;
-
-// Task do mrugania diodą LED
 void led_blink_task(void *pvParameter) {
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
 
     while (1) {
-        if (!wifi_connected) {  // Mrugamy, gdy Wi-Fi jest rozłączone
+        if (!wifi_connected) {
             gpio_set_level(LED_PIN, 1);
             vTaskDelay(500 / portTICK_PERIOD_MS);
             gpio_set_level(LED_PIN, 0);
             vTaskDelay(500 / portTICK_PERIOD_MS);
-        } else {  // Gdy Wi-Fi jest połączone, wyłączamy diodę
+        } else {
             gpio_set_level(LED_PIN, 0);
             vTaskDelay(1000 / portTICK_PERIOD_MS);
         }
@@ -44,24 +46,23 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
         printf("WIFI CONNECTING....\n");
     } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
         printf("WiFi CONNECTED\n");
+        isFirstLoop = false;
         retry_num = 0;
-        wifi_connected = true;  // Ustawienie flagi na true, gdy Wi-Fi jest połączone
+        wifi_connected = true;
     } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (retry_num == 0) {
+        if (retry_num == 0 && !isFirstLoop) {
             printf("WiFi lost connection\n");
         }
-        
-        wifi_connected = false;  // Ustawienie flagi na false, gdy Wi-Fi jest rozłączone
-        esp_wifi_connect();  // Ponawiamy próbę połączenia
+        wifi_connected = false;
+        esp_wifi_connect();
         retry_num++;
         printf("Retrying to Connect...(%d)\n", retry_num);
     } else if (event_id == IP_EVENT_STA_GOT_IP) {
         printf("WiFi got IP...\n\n");
         retry_num = 0;
-        wifi_connected = true;  // Aktualizacja flagi po uzyskaniu IP
-        
-        // Zwolnienie semafora po uzyskaniu IP
-        xSemaphoreGive(wifi_semaphore);
+        wifi_connected = true;
+        // Po uzyskaniu IP dajemy semafor, aby wykonać request HTTP
+        xSemaphoreGive(http_semaphore);
     }
 }
 
@@ -93,30 +94,77 @@ void wifi_connection() {
     printf("wifi_init_softap finished. SSID:%s  password:%s\n", WIFI_SSID, WIFI_PASS);
 }
 
+void http_get_task(void *pvParameters) {
+    while (1) {
+        // Czekamy na semafor - zostanie on dany po uzyskaniu IP
+        if (xSemaphoreTake(http_semaphore, portMAX_DELAY) == pdTRUE) {
+            struct sockaddr_in server_addr;
+            struct hostent *hp;
+            
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock < 0) {
+                printf("Nie można utworzyć gniazda\n");
+                continue;
+            }
+
+            server_addr.sin_family = AF_INET;
+            server_addr.sin_port = htons(80);
+            hp = gethostbyname(HTTP_SERVER);
+            if (hp == NULL) {
+                printf("Nie można znaleźć hosta\n");
+                close(sock);
+                continue;
+            }
+            memcpy(&server_addr.sin_addr.s_addr, hp->h_addr, hp->h_length);
+
+            if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0) {
+                printf("Błąd połączenia z serwerem\n");
+                close(sock);
+                continue;
+            }
+
+            char request[128];
+            snprintf(request, sizeof(request),
+                    "GET / HTTP/1.1\r\n"
+                    "Host: %s\r\n"
+                    "Connection: close\r\n\r\n",
+                    HTTP_SERVER);
+
+            if (send(sock, request, strlen(request), 0) < 0) {
+                printf("Błąd wysyłania zapytania\n");
+                close(sock);
+                continue;
+            }
+
+            char response[MAX_HTTP_RESPONSE_SIZE];
+            int total_len = 0;
+            int len;
+
+            while ((len = recv(sock, response + total_len, sizeof(response) - total_len - 1, 0)) > 0) {
+                total_len += len;
+                if (total_len >= sizeof(response) - 1) break;
+            }
+            response[total_len] = '\0';
+
+            printf("Otrzymana odpowiedź HTTP:\n%s\n", response);
+            close(sock);
+        }
+    }
+}
+
 void app_main(void) {
-    // Inicjalizacja NVS
     nvs_flash_init();
+    
+    // Utworzenie semafora binarnego
+    http_semaphore = xSemaphoreCreateBinary();
+    if (http_semaphore == NULL) {
+        printf("Nie można utworzyć semafora\n");
+        return;
+    }
 
-    // Inicjalizacja semafora binarnego
-    wifi_semaphore = xSemaphoreCreateBinary();
-
-    // Uruchamiamy połączenie Wi-Fi
     wifi_connection();
-
-    // Tworzymy task do mrugania diodą LED
     xTaskCreate(&led_blink_task, "led_blink_task", 1024, NULL, 1, NULL);
+    xTaskCreate(&http_get_task, "http_get_task", 4096, NULL, 4, NULL);
 
-    // Oczekiwanie na semafor przed kontynuowaniem
-    if (xSemaphoreTake(wifi_semaphore, portMAX_DELAY) == pdTRUE) {
-        printf("Skończono konfigurowanie wifi. Kontynuowanie programu głównego...\n");
-    }
-
-    printf("Hello World\n");
-    for (int i = 10; i >= 0; i--) {
-        printf("Restarting in %d seconds...\n", i);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-    printf("Restarting now.\n");
     fflush(stdout);
-    esp_restart();
 }

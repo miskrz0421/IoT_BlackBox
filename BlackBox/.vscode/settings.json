@@ -16,6 +16,7 @@
     "idf.toolsPathWin": "C:\\Users\\kacpe\\.espressif",
     "idf.flashType": "UART",
     "files.associations": {
-        "freertos.h": "c"
+        "freertos.h": "c",
+        "esp_mac.h": "c"
     }
 }

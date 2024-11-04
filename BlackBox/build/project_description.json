@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "BlackBox",
-    "project_version":    "ee97846",
+    "project_version":    "a6fb237-dirty",
     "project_path":       "C:/Users/kacpe/OneDrive/Pulpit/xd3/IoT_BlackBox/BlackBox",
     "idf_path":           "C:/esp-idf",
     "build_dir":          "C:/Users/kacpe/OneDrive/Pulpit/xd3/IoT_BlackBox/BlackBox/build",
