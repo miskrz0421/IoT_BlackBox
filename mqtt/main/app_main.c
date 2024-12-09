@@ -15,9 +15,10 @@
 
 #define USER_ID "BlackBox_User01"
 #define MQTT_BROKER_URL "mqtt://192.168.137.1:1883/"
+#define TAG "mqtt_sensor_client"
 
 char DEVICE_ID[18];
-static const char *TAG = "mqtt_sensor_client";
+
 int mqtt_connected = 0;
 
 typedef struct
@@ -29,10 +30,8 @@ typedef struct
 
 void get_mac_address(void)
 {
-    // Zmienna przechowująca adres MAC
     uint8_t mac[6];
 
-    // Pobranie adresu MAC dla interfejsu WiFi (base MAC address)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     sprintf(DEVICE_ID, "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -47,7 +46,7 @@ static float generate_random_float(float min, float max)
 
 static void read_sensor_data(sensor_data_t *data)
 {
-    data->temperature = generate_random_float(18.0, 30.0);
+    data->temperature = generate_random_float(-50.0, 1000.0);
     data->humidity = generate_random_float(30.0, 80.0);
     data->light = generate_random_float(0.0, 1000.0);
 }
@@ -78,7 +77,6 @@ static void publish_sensor_data(esp_mqtt_client_handle_t client, char *sensor, s
 {
     char topic[128];
 
-    // Create JSON object
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device_id", DEVICE_ID);
     cJSON_AddStringToObject(root, "user_id", USER_ID);
@@ -86,23 +84,18 @@ static void publish_sensor_data(esp_mqtt_client_handle_t client, char *sensor, s
     cJSON_AddNumberToObject(root, "humidity", data->humidity);
     cJSON_AddNumberToObject(root, "light", data->light);
 
-    // Get timestamp
     time_t now;
     time(&now);
     cJSON_AddNumberToObject(root, "timestamp", now);
 
-    // Convert JSON to string
     char *json_string = cJSON_Print(root);
 
-    // Create single topic for all sensor data
     snprintf(topic, sizeof(topic), "/%s/%s/%s/sensor_data", USER_ID, DEVICE_ID, sensor);
 
-    // Publish JSON data
     esp_mqtt_client_publish(client, topic, json_string, 0, 1, 0);
 
     ESP_LOGI(TAG, "Published: %s", json_string);
 
-    // Cleanup
     cJSON_Delete(root);
     free(json_string);
 }
@@ -154,7 +147,6 @@ static void mqtt_app_start(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "[APP] Startup..");
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     get_mac_address();

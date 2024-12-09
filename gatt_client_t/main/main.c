@@ -258,28 +258,29 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                                                                 gl_profile_tab[PROFILE_A_APP_ID].battery_service_end_handle,
                                                                 INVALID_HANDLE,
                                                                 &count);
-        if (status == ESP_GATT_OK && count > 0)
+        if (status != ESP_GATT_OK || count == 0)
         {
-            char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
-            if (char_elem_result)
+            return;
+        }
+        char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
+        if (char_elem_result)
+        {
+            status = esp_ble_gattc_get_all_char(gattc_if,
+                                                p_data->search_cmpl.conn_id,
+                                                gl_profile_tab[PROFILE_A_APP_ID].battery_service_start_handle,
+                                                gl_profile_tab[PROFILE_A_APP_ID].battery_service_end_handle,
+                                                char_elem_result,
+                                                &count,
+                                                0);
+
+            if (char_elem_result[0].uuid.uuid.uuid16 == BATTERY_CHAR_UUID)
             {
-                status = esp_ble_gattc_get_all_char(gattc_if,
-                                                    p_data->search_cmpl.conn_id,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].battery_service_start_handle,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].battery_service_end_handle,
-                                                    char_elem_result,
-                                                    &count,
-                                                    0);
-
-                if (char_elem_result[0].uuid.uuid.uuid16 == BATTERY_CHAR_UUID)
-                {
-                    gl_profile_tab[PROFILE_A_APP_ID].battery_char_handle = char_elem_result[0].char_handle;
-                    ESP_LOGI(GATTC_TAG, "Found battery characteristic");
-                }
-
-                free(char_elem_result);
-                char_elem_result = NULL;
+                gl_profile_tab[PROFILE_A_APP_ID].battery_char_handle = char_elem_result[0].char_handle;
+                ESP_LOGI(GATTC_TAG, "Found battery characteristic");
             }
+
+            free(char_elem_result);
+            char_elem_result = NULL;
         }
 
         count = 0;
@@ -290,28 +291,30 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                                               gl_profile_tab[PROFILE_A_APP_ID].alert_service_end_handle,
                                               INVALID_HANDLE,
                                               &count);
-        if (status == ESP_GATT_OK && count > 0)
+        if (status != ESP_GATT_OK || count == 0)
         {
-            char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
-            if (char_elem_result)
+            return;
+        }
+
+        char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
+        if (char_elem_result)
+        {
+            status = esp_ble_gattc_get_all_char(gattc_if,
+                                                p_data->search_cmpl.conn_id,
+                                                gl_profile_tab[PROFILE_A_APP_ID].alert_service_start_handle,
+                                                gl_profile_tab[PROFILE_A_APP_ID].alert_service_end_handle,
+                                                char_elem_result,
+                                                &count,
+                                                0);
+
+            if (char_elem_result[0].uuid.uuid.uuid16 == ALERT_CHAR_UUID)
             {
-                status = esp_ble_gattc_get_all_char(gattc_if,
-                                                    p_data->search_cmpl.conn_id,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].alert_service_start_handle,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].alert_service_end_handle,
-                                                    char_elem_result,
-                                                    &count,
-                                                    0);
-
-                if (char_elem_result[0].uuid.uuid.uuid16 == ALERT_CHAR_UUID)
-                {
-                    gl_profile_tab[PROFILE_A_APP_ID].alert_char_handle = char_elem_result[0].char_handle;
-                    ESP_LOGI(GATTC_TAG, "Found alert characteristic");
-                }
-
-                free(char_elem_result);
-                char_elem_result = NULL;
+                gl_profile_tab[PROFILE_A_APP_ID].alert_char_handle = char_elem_result[0].char_handle;
+                ESP_LOGI(GATTC_TAG, "Found alert characteristic");
             }
+
+            free(char_elem_result);
+            char_elem_result = NULL;
         }
 
         count = 0;
@@ -322,37 +325,39 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                                               gl_profile_tab[PROFILE_A_APP_ID].click_service_end_handle,
                                               INVALID_HANDLE,
                                               &count);
-        if (status == ESP_GATT_OK && count > 0)
+        if (status != ESP_GATT_OK || count == 0)
         {
-            char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
-            if (char_elem_result)
-            {
-                status = esp_ble_gattc_get_all_char(gattc_if,
-                                                    p_data->search_cmpl.conn_id,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].click_service_start_handle,
-                                                    gl_profile_tab[PROFILE_A_APP_ID].click_service_end_handle,
-                                                    char_elem_result,
-                                                    &count,
-                                                    0);
-
-                if (char_elem_result[0].uuid.uuid.uuid16 == CLICK_CHAR_UUID)
-                {
-                    gl_profile_tab[PROFILE_A_APP_ID].click_char_handle = char_elem_result[0].char_handle;
-                    ESP_LOGI(GATTC_TAG, "Found click characteristic");
-                    if (count > 0 && (char_elem_result[0].properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY))
-                    {
-                        gl_profile_tab[PROFILE_A_APP_ID].click_char_handle =
-                            char_elem_result[0].char_handle;
-                        esp_ble_gattc_register_for_notify(gattc_if,
-                                                          gl_profile_tab[PROFILE_A_APP_ID].remote_bda,
-                                                          char_elem_result[0].char_handle);
-                    }
-                }
-
-                free(char_elem_result);
-                char_elem_result = NULL;
-            }
+            return;
         }
+        char_elem_result = (esp_gattc_char_elem_t *)malloc(sizeof(esp_gattc_char_elem_t) * count);
+        if (char_elem_result)
+        {
+            status = esp_ble_gattc_get_all_char(gattc_if,
+                                                p_data->search_cmpl.conn_id,
+                                                gl_profile_tab[PROFILE_A_APP_ID].click_service_start_handle,
+                                                gl_profile_tab[PROFILE_A_APP_ID].click_service_end_handle,
+                                                char_elem_result,
+                                                &count,
+                                                0);
+
+            if (char_elem_result[0].uuid.uuid.uuid16 == CLICK_CHAR_UUID)
+            {
+                gl_profile_tab[PROFILE_A_APP_ID].click_char_handle = char_elem_result[0].char_handle;
+                ESP_LOGI(GATTC_TAG, "Found click characteristic");
+                if (count > 0 && (char_elem_result[0].properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY))
+                {
+                    gl_profile_tab[PROFILE_A_APP_ID].click_char_handle =
+                        char_elem_result[0].char_handle;
+                    esp_ble_gattc_register_for_notify(gattc_if,
+                                                      gl_profile_tab[PROFILE_A_APP_ID].remote_bda,
+                                                      char_elem_result[0].char_handle);
+                }
+            }
+
+            free(char_elem_result);
+            char_elem_result = NULL;
+        }
+
         connect = true;
         break;
     }
