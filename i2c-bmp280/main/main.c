@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <math.h>
 
 #define I2C_MASTER_SCL_IO 9
 #define I2C_MASTER_SDA_IO 8
@@ -28,6 +29,54 @@
 #define MODE_FORCED 1
 #define MODE_SLEEP 2
 
+#define TEMPERATURE_STANDARD 288.15
+#define GRAVITY 9.80665
+#define PRESSURE_SEA_LEVEL 101325
+#define MOLAR_MASS_AIR 0.0289644
+#define GAS_CONSTANT 8.31446
+#define ALTITUDE 220
+
+typedef enum
+{
+    OSRS_P_SKIPPED = 0b000, // Skipped (no pressure measurement)
+    OSRS_P_X1 = 0b001,      // Oversampling x1
+    OSRS_P_X2 = 0b010,      // Oversampling x2
+    OSRS_P_X4 = 0b011,      // Oversampling x4
+    OSRS_P_X8 = 0b100,      // Oversampling x8
+    OSRS_P_X16 = 0b101      // Oversampling x16
+} bmp280_osrs_p_t;
+
+typedef enum
+{
+    OSRS_T_SKIPPED = 0b000, // Skipped (no temperature measurement)
+    OSRS_T_X1 = 0b001,      // Oversampling x1
+    OSRS_T_X2 = 0b010,      // Oversampling x2
+    OSRS_T_X4 = 0b011,      // Oversampling x4
+    OSRS_T_X8 = 0b100,      // Oversampling x8
+    OSRS_T_X16 = 0b101      // Oversampling x16
+} bmp280_osrs_t_t;
+
+typedef enum
+{
+    FILTER_OFF = 0b000,    // Filter off
+    FILTER_COEF_2 = 0b001, // Filter coefficient 2
+    FILTER_COEF_4 = 0b010, // Filter coefficient 4
+    FILTER_COEF_8 = 0b011, // Filter coefficient 8
+    FILTER_COEF_16 = 0b100 // Filter coefficient 16
+} bmp280_filter_t;
+
+typedef enum
+{
+    T_SB_0_5 = 0b000,  // 0.5ms
+    T_SB_62_5 = 0b001, // 62.5ms
+    T_SB_125 = 0b010,  // 125ms
+    T_SB_250 = 0b011,  // 250ms
+    T_SB_500 = 0b100,  // 500ms
+    T_SB_1000 = 0b101, // 1000ms
+    T_SB_2000 = 0b110, // 2000ms
+    T_SB_4000 = 0b111  // 4000ms
+} bmp280_t_sb_t;
+
 static const char *TAG = "BMP280";
 static uint8_t current_mode = MODE_NORMAL;
 static bool sensor_connected = false;
@@ -49,6 +98,9 @@ typedef struct
     int16_t dig_p8;
     int16_t dig_p9;
 } bmp280_calib_t;
+
+static uint8_t current_ctrl_meas = 0b01010111; // Rejestr 0xF4
+static uint8_t current_config = 0b00110000;    // Rejestr 0xF5
 
 static bmp280_calib_t calib_params;
 
@@ -174,11 +226,11 @@ static esp_err_t bmp280_init(void)
     if (err != ESP_OK)
         return err;
 
-    err = bmp280_write_reg(BMP280_REG_CTRL_MEAS, 0b01010111);
+    err = bmp280_write_reg(BMP280_REG_CTRL_MEAS, current_ctrl_meas);
     if (err != ESP_OK)
         return err;
 
-    return bmp280_write_reg(BMP280_REG_CONFIG, 0b00100000);
+    return bmp280_write_reg(BMP280_REG_CONFIG, current_config);
 }
 
 static esp_err_t bmp280_reconnect(void)
@@ -211,17 +263,21 @@ static esp_err_t bmp280_read_measurements(float *temperature, float *pressure)
     if (err != ESP_OK)
         return err;
 
-    int32_t press_raw = (data[0] << 12) | (data[1] << 4) | (data[2] >> 4);
-    int32_t temp_raw = (data[3] << 12) | (data[4] << 4) | (data[5] >> 4);
+    // Poprawiony odczyt danych dla temp i ciśnienia
+    int32_t press_raw = ((uint32_t)data[0] << 12) | ((uint32_t)data[1] << 4) | ((data[2] >> 4) & 0x0F);
+    int32_t temp_raw = ((uint32_t)data[3] << 12) | ((uint32_t)data[4] << 4) | ((data[5] >> 4) & 0x0F);
 
-    int32_t var1_t, var2_t, t_fine;
+    // Przetwarzanie temperatury
+    int32_t var1, var2, t_fine;
+    var1 = ((((temp_raw >> 3) - ((int32_t)calib_params.dig_t1 << 1))) * (int32_t)calib_params.dig_t2) >> 11;
+    var2 = (((((temp_raw >> 4) - (int32_t)calib_params.dig_t1) * ((temp_raw >> 4) - (int32_t)calib_params.dig_t1)) >> 12) * (int32_t)calib_params.dig_t3) >> 14;
+    t_fine = var1 + var2;
+
+    *temperature = (t_fine * 5 + 128) >> 8; // Temperatura w °C * 100
+    *temperature = *temperature / 100.0f;   // Konwersja na °C
+
+    // Przetwarzanie ciśnienia
     int64_t var1_p, var2_p, p;
-
-    var1_t = ((((temp_raw >> 3) - ((int32_t)calib_params.dig_t1 << 1))) * ((int32_t)calib_params.dig_t2)) >> 11;
-    var2_t = (((((temp_raw >> 4) - ((int32_t)calib_params.dig_t1)) * ((temp_raw >> 4) - ((int32_t)calib_params.dig_t1))) >> 12) * ((int32_t)calib_params.dig_t3)) >> 14;
-    t_fine = var1_t + var2_t;
-    *temperature = ((t_fine * 5 + 128) >> 8) / 100.0f;
-
     var1_p = ((int64_t)t_fine) - 128000;
     var2_p = var1_p * var1_p * (int64_t)calib_params.dig_p6;
     var2_p = var2_p + ((var1_p * (int64_t)calib_params.dig_p5) << 17);
@@ -230,16 +286,33 @@ static esp_err_t bmp280_read_measurements(float *temperature, float *pressure)
     var1_p = (((((int64_t)1) << 47) + var1_p)) * ((int64_t)calib_params.dig_p1) >> 33;
 
     if (var1_p == 0)
-        return ESP_ERR_INVALID_STATE;
+        return ESP_ERR_INVALID_STATE; // Uniknięcie dzielenia przez zero
 
     p = 1048576 - press_raw;
     p = (((p << 31) - var2_p) * 3125) / var1_p;
     var1_p = (((int64_t)calib_params.dig_p9) * (p >> 13) * (p >> 13)) >> 25;
     var2_p = (((int64_t)calib_params.dig_p8) * p) >> 19;
+
     p = ((p + var1_p + var2_p) >> 8) + (((int64_t)calib_params.dig_p7) << 4);
-    *pressure = (float)p / 256.0f;
+    *pressure = (float)p / 256.0f; // Ciśnienie w Pa
 
     return ESP_OK;
+}
+esp_err_t bmp280_configure_regs(bmp280_osrs_p_t osrs_p, bmp280_osrs_t_t osrs_t,
+                                bmp280_filter_t filter, bmp280_t_sb_t t_sb)
+{
+    // Przygotuj wartość dla CTRL_MEAS (0xF4)
+    current_ctrl_meas = (osrs_t << 5) | (osrs_p << 2) | 0b11;
+
+    // Przygotuj wartość dla CONFIG (0xF5)
+    current_config = (t_sb << 5) | (filter << 2);
+
+    // Zapisz nowe wartości do rejestrów
+    esp_err_t err = bmp280_write_reg(BMP280_REG_CTRL_MEAS, current_ctrl_meas);
+    if (err != ESP_OK)
+        return err;
+
+    return bmp280_write_reg(BMP280_REG_CONFIG, current_config);
 }
 
 static void button_task(void *pvParameters)
@@ -252,7 +325,8 @@ static void button_task(void *pvParameters)
 
         if (last_state == 1 && current_state == 0)
         {
-            current_mode = (current_mode + 1) % 3;
+            // Przełączamy tylko między NORMAL i FORCED
+            current_mode = (current_mode == MODE_NORMAL) ? MODE_FORCED : MODE_NORMAL;
             esp_err_t err = bmp280_set_mode(current_mode);
             if (err == ESP_OK)
             {
@@ -266,10 +340,100 @@ static void button_task(void *pvParameters)
     }
 }
 
+double normalize_pressure(double pressure, double altitude)
+{
+    // Wzór barometryczny:
+    // P0 = P * exp((g * M * h) / (R * T))
+    // gdzie:
+    // P0 - ciśnienie na poziomie morza
+    // P - ciśnienie zmierzone
+    // g - przyspieszenie ziemskie
+    // M - masa molowa powietrza
+    // h - wysokość
+    // R - stała gazowa
+    // T - temperatura standardowa
+
+    double exponent = (GRAVITY * MOLAR_MASS_AIR * altitude) / (GAS_CONSTANT * TEMPERATURE_STANDARD);
+    double normalized_pressure = pressure * exp(exponent);
+
+    return normalized_pressure;
+}
+static void handle_normal_mode(void)
+{
+    float temperature, pressure;
+    if (bmp280_read_measurements(&temperature, &pressure) == ESP_OK)
+    {
+        if (first_connect != 0)
+        {
+            ESP_LOGI(TAG, "[NORMAL] Temperature: %.2f °C, Air Pressure: %.2f hPa, Sea Level Pressure: %.2f hPa",
+                     temperature, pressure / 100.0, normalize_pressure(pressure, ALTITUDE) / 100.0);
+        }
+        else
+        {
+            first_connect++;
+        }
+    }
+    else
+    {
+        sensor_connected = false;
+    }
+}
+
+static void handle_forced_mode(void)
+{
+    float temp_forced, press_forced;
+    if (bmp280_read_measurements(&temp_forced, &press_forced) == ESP_OK)
+    {
+        if (first_connect != 0)
+        {
+            ESP_LOGI(TAG, "[FORCED] Temperature: %.2f °C, Air Pressure: %.2f hPa, Sea Level Pressure: %.2f hPa",
+                     temp_forced, press_forced / 100.0, normalize_pressure(press_forced, ALTITUDE) / 100.0);
+        }
+        else
+        {
+            first_connect++;
+        }
+    }
+    else
+    {
+        first_connect = 0;
+        sensor_connected = false;
+        return;
+    }
+    current_mode = MODE_SLEEP;
+
+    ESP_LOGI(TAG, "Switching to Sleep mode after Forced measurement");
+}
+
+static void handle_sleep_mode(void)
+{
+
+    float temperature, pressure;
+    if (bmp280_read_measurements(&temperature, &pressure) == ESP_OK)
+    {
+        if (first_connect != 0)
+        {
+            ESP_LOGI(TAG, "[SLEEP] Temperature: %.2f °C, Air Pressure: %.2f hPa, Sea Level Pressure: %.2f hPa",
+                     temperature, pressure / 100.0, normalize_pressure(pressure, ALTITUDE) / 100.0);
+        }
+        else
+        {
+            first_connect++;
+        }
+    }
+    else
+    {
+        sensor_connected = false;
+    }
+
+    return;
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(i2c_master_init());
     button_init();
+
     ESP_LOGI(TAG, "I2C initialized successfully");
 
     if (bmp280_init() == ESP_OK && bmp280_set_mode(MODE_NORMAL) == ESP_OK)
@@ -279,6 +443,16 @@ void app_main(void)
     }
 
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    // bmp280_configure_regs(OSRS_P_SKIPPED, OSRS_T_SKIPPED, FILTER_OFF, T_SB_125);
+
+    // uint8_t current_config;
+    // uint8_t current_config2;
+    // esp_err_t err = bmp280_read_reg(BMP280_REG_CTRL_MEAS, &current_config, 1);
+    // esp_err_t err2 = bmp280_read_reg(BMP280_REG_CONFIG, &current_config2, 1);
+
+    // ESP_LOGI(TAG, "CURRENT CTRL_MEAS %X", current_config);
+    // ESP_LOGI(TAG, "CURRENT REG_CONFIG %X", current_config2);
 
     while (1)
     {
@@ -290,7 +464,6 @@ void app_main(void)
                 first_connect = 0;
                 sensor_connected = false;
             }
-
             vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS));
             if (bmp280_reconnect() != ESP_OK)
                 continue;
@@ -299,51 +472,18 @@ void app_main(void)
         switch (current_mode)
         {
         case MODE_NORMAL:
-            float temperature, pressure;
-            if (bmp280_read_measurements(&temperature, &pressure) == ESP_OK)
-            {
-                if (first_connect != 0)
-                {
-                    ESP_LOGI(TAG, "Temperature: %.2f °C, Pressure: %.2f Pa", temperature, pressure);
-                }
-                else
-                {
-                    first_connect++;
-                }
-            }
-            else
-            {
-                sensor_connected = false;
-            }
-            break;
+            handle_normal_mode();
 
+            break;
         case MODE_FORCED:
-            float temp_forced, press_forced;
-            if (bmp280_read_measurements(&temp_forced, &press_forced) == ESP_OK)
-            {
-                if (first_connect != 0)
-                {
-                    ESP_LOGI(TAG, "[Forced] Temperature: %.2f °C, Pressure: %.2f Pa", temp_forced, press_forced);
-                }
-                else
-                {
-                    first_connect++;
-                }
-            }
-            else
-            {
-                first_connect = 0;
-                sensor_connected = false;
-                break;
-            }
-            current_mode = MODE_SLEEP;
-            bmp280_set_mode(MODE_SLEEP);
-            ESP_LOGI(TAG, "Switching to Sleep mode after Forced measurement");
+            handle_forced_mode();
             break;
-
         case MODE_SLEEP:
+            handle_sleep_mode();
+
             break;
         }
+
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }

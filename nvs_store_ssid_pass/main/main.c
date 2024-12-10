@@ -1,6 +1,7 @@
 #include "nvs_flash.h"
 #include "wifi.h"
 #include "ble.h"
+#include "mqtt.h"
 
 #include "nvs_flash.h"
 #include "wifi.h"
@@ -20,6 +21,7 @@ void button_task(void *pvParameters)
 
         if (last_state == true && current_state == false)
         {
+            printf("BLE ENABLED: %d", ble_enabled());
             if (!ble_enabled())
             {
                 wifi_stop();
@@ -55,6 +57,8 @@ void app_main(void)
     gpio_config(&io_conf);
 
     wifi_connection();
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    mqtt_init();
 
     xTaskCreate(button_task, "button_task", 4096, NULL, 5, NULL);
 }

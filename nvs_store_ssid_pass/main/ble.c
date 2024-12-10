@@ -354,6 +354,7 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
         conn_id = -1;
         connected = false;
         vTaskDelay(pdMS_TO_TICKS(50));
+        ble_toggle(false);
         wifi_connection();
         break;
 
