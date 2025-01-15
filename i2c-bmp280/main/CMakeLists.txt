@@ -1,2 +1,2 @@
-idf_component_register(SRCS "main.c"
+idf_component_register(SRCS "example.c" "bmp280_lib.c"
                     INCLUDE_DIRS ".")
