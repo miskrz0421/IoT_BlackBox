@@ -24,35 +24,32 @@
 #define GATTS_TAG "GATTS"
 #define TEST_DEVICE_NAME "BLACKBOX_GATT_SERVER"
 
-//
 #define CONFIG_SERVICE_UUID 0xFF00
 #define SSID_CHAR_UUID 0xFF01
 #define PASSWORD_CHAR_UUID 0xFF02
-#define MQTT_BROKER_UUID 0xFF03   // New
-#define USERNAME_CHAR_UUID 0xFF04 // Renamed from USER_CHAR_UUID
-#define PIN_CHAR_UUID 0xFF05      // New
+#define MQTT_BROKER_UUID 0xFF03
+#define USERNAME_CHAR_UUID 0xFF04
+#define PIN_CHAR_UUID 0xFF05
 
 #define MAX_STRING_LENGTH 32
-#define CONFIG_NUM_HANDLE 11 // Increased for new characteristics
+#define CONFIG_NUM_HANDLE 11
 
-// Update handle structure
 typedef struct
 {
     uint16_t service_handle;
     uint16_t ssid_handle;
     uint16_t password_handle;
-    uint16_t mqtt_broker_handle; // New
-    uint16_t username_handle;    // Renamed from user_handle
-    uint16_t pin_handle;         // New
+    uint16_t mqtt_broker_handle;
+    uint16_t username_handle;
+    uint16_t pin_handle;
 } config_service_handles_t;
 
-// Add storage variables
 static char ssid_value[MAX_STRING_LENGTH] = "";
 static char password_value[MAX_STRING_LENGTH] = "";
-static char mqtt_broker_value[MAX_STRING_LENGTH] = ""; // New
-static char username_value[MAX_STRING_LENGTH] = "";    // Renamed from user_value
-char pin_value[7] = "";                                // New, fixed size for 6 digits
-//
+static char mqtt_broker_value[MAX_STRING_LENGTH] = "";
+static char username_value[MAX_STRING_LENGTH] = "";
+char pin_value[7] = "";
+
 void ble_toggle(bool enable);
 static bool enabled = false;
 bool got_pin = false;
@@ -123,7 +120,6 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 
 static void handle_read_request(esp_gatt_if_t interface, esp_ble_gatts_cb_param_t *param)
 {
-    // Reject all read attempts as characteristics are write-only
     esp_ble_gatts_send_response(interface, param->read.conn_id, param->read.trans_id,
                                 ESP_GATT_READ_NOT_PERMIT, NULL);
     ESP_LOGW(GATTS_TAG, "Read attempt rejected - characteristics are write-only");
@@ -142,7 +138,6 @@ static void handle_write_request(esp_gatt_if_t interface, esp_ble_gatts_cb_param
     char temp_value[MAX_STRING_LENGTH] = {0};
     memcpy(temp_value, param->write.value, param->write.len);
 
-    // Special handling for PIN - validate 6 digits and store only in RAM
     if (param->write.handle == config_handles.pin_handle)
     {
         size_t digit_count = strspn(temp_value, "0123456789");
@@ -162,7 +157,6 @@ static void handle_write_request(esp_gatt_if_t interface, esp_ble_gatts_cb_param
         return;
     }
 
-    // Handle other characteristics with NVS storage
     nvs_handle_t nvs_handle;
     esp_err_t err = nvs_open("config", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
@@ -253,7 +247,6 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
             config_handles.service_handle = param->create.service_handle;
             ESP_ERROR_CHECK(esp_ble_gatts_start_service(config_handles.service_handle));
 
-            // Add the first characteristic (SSID)
             esp_bt_uuid_t ssid_uuid = {
                 .len = ESP_UUID_LEN_16,
                 .uuid = {.uuid16 = SSID_CHAR_UUID},
@@ -273,13 +266,11 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
         {
             uint16_t char_uuid = param->add_char.char_uuid.uuid.uuid16;
 
-            // Handle SSID characteristic
             if (char_uuid == SSID_CHAR_UUID)
             {
                 config_handles.ssid_handle = param->add_char.attr_handle;
                 ESP_LOGI(GATTS_TAG, "SSID characteristic added");
 
-                // Add next characteristic
                 esp_bt_uuid_t password_uuid = {
                     .len = ESP_UUID_LEN_16,
                     .uuid = {.uuid16 = PASSWORD_CHAR_UUID},
@@ -292,13 +283,12 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
                     NULL,
                     NULL));
             }
-            // Handle Password characteristic
+
             else if (char_uuid == PASSWORD_CHAR_UUID)
             {
                 config_handles.password_handle = param->add_char.attr_handle;
                 ESP_LOGI(GATTS_TAG, "Password characteristic added");
 
-                // Add next characteristic
                 esp_bt_uuid_t username_uuid = {
                     .len = ESP_UUID_LEN_16,
                     .uuid = {.uuid16 = USERNAME_CHAR_UUID},
@@ -311,13 +301,12 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
                     NULL,
                     NULL));
             }
-            // Handle Username characteristic
+
             else if (char_uuid == USERNAME_CHAR_UUID)
             {
                 config_handles.username_handle = param->add_char.attr_handle;
                 ESP_LOGI(GATTS_TAG, "Username characteristic added");
 
-                // Add next characteristic
                 esp_bt_uuid_t mqtt_broker_uuid = {
                     .len = ESP_UUID_LEN_16,
                     .uuid = {.uuid16 = MQTT_BROKER_UUID},
@@ -330,13 +319,11 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
                     NULL,
                     NULL));
             }
-            // Handle MQTT Broker characteristic
             else if (char_uuid == MQTT_BROKER_UUID)
             {
                 config_handles.mqtt_broker_handle = param->add_char.attr_handle;
                 ESP_LOGI(GATTS_TAG, "MQTT Broker characteristic added");
 
-                // Add final characteristic
                 esp_bt_uuid_t pin_uuid = {
                     .len = ESP_UUID_LEN_16,
                     .uuid = {.uuid16 = PIN_CHAR_UUID},
@@ -349,12 +336,10 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
                     NULL,
                     NULL));
             }
-            // Handle PIN characteristic
             else if (char_uuid == PIN_CHAR_UUID)
             {
                 config_handles.pin_handle = param->add_char.attr_handle;
                 ESP_LOGI(GATTS_TAG, "PIN characteristic added");
-                // This is the last characteristic, no need to add more
             }
         }
         break;
@@ -375,7 +360,6 @@ static void esp_gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t interface,
         connected = false;
         vTaskDelay(pdMS_TO_TICKS(50));
         ble_toggle(false);
-        // wifi_connection();
         break;
 
     case ESP_GATTS_READ_EVT:

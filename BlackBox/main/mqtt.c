@@ -34,18 +34,6 @@ void get_mac_address(void)
     ESP_LOGI(TAG, "WiFi Station MAC Address: %s", DEVICE_MAC);
 }
 
-// static float generate_mock_temperature(void)
-// {
-//     float scale = rand() / (float)RAND_MAX;
-//     return -40.0 + scale * (125.0);
-// }
-
-// static float generate_mock_pressure(void)
-// {
-//     float scale = rand() / (float)RAND_MAX;
-//     return 300.0 + scale * (800.0);
-// }
-
 static void stop_mqtt_client(void)
 {
     if (mqtt_client != NULL)
@@ -63,14 +51,12 @@ bool pin_verified = false;
 bool response_received = false;
 bool mqtt_verify_pin(char *pin_value)
 {
-    // Check if MQTT client is connected
     if (!mqtt_connected || mqtt_client == NULL)
     {
         ESP_LOGE(TAG, "MQTT not connected");
         return false;
     }
 
-    // Read username from NVS
     nvs_handle_t nvs_handle;
     char username[32] = "Undefined";
     esp_err_t err = nvs_open("config", NVS_READONLY, &nvs_handle);
@@ -92,7 +78,6 @@ bool mqtt_verify_pin(char *pin_value)
         return false;
     }
 
-    // Construct MQTT topics
     char pin_topic[128];
     char response_topic[128];
 
@@ -101,14 +86,11 @@ bool mqtt_verify_pin(char *pin_value)
 
     ESP_LOGI(TAG, "Pin topic: %s", pin_topic);
     ESP_LOGI(TAG, "Response topic: %s", response_topic);
-    // Volatile variables for thread-safe response handling
     response_received = false;
     pin_verified = false;
 
-    // Subscribe to response topic
     esp_mqtt_client_subscribe(mqtt_client, response_topic, 0);
 
-    // Publish PIN
     int msg_id = esp_mqtt_client_publish(mqtt_client, pin_topic, pin_value, strlen(pin_value), 0, 0);
     if (msg_id == -1)
     {
@@ -116,22 +98,19 @@ bool mqtt_verify_pin(char *pin_value)
         return false;
     }
 
-    // Wait for response (with timeout)
     int timeout_counter = 0;
     while (!response_received && timeout_counter < 50)
-    { // Wait up to 5 seconds
+    {
         vTaskDelay(pdMS_TO_TICKS(100));
         timeout_counter++;
     }
 
-    // Check if response was received
     if (!response_received)
     {
         ESP_LOGE(TAG, "PIN verification timeout");
         return false;
     }
 
-    // Return verification result
     return pin_verified;
 }
 void mqtt_publish_data(char *json, char *sensor_name)
@@ -142,7 +121,6 @@ void mqtt_publish_data(char *json, char *sensor_name)
         return;
     }
 
-    // Read username from NVS
     nvs_handle_t nvs_handle;
     char username[32] = "Undefined";
     esp_err_t err = nvs_open("config", NVS_READONLY, &nvs_handle);
@@ -164,7 +142,6 @@ void mqtt_publish_data(char *json, char *sensor_name)
         return;
     }
 
-    // Construct MQTT topic
     char response_topic[128];
     snprintf(response_topic, sizeof(response_topic), "BlackBox/%s/%s/%s", username, DEVICE_MAC, sensor_name);
 
@@ -185,7 +162,6 @@ bool send_config_response(void)
         return false;
     }
 
-    // Read username from NVS
     nvs_handle_t nvs_handle;
     char username[32] = "Undefined";
     esp_err_t err = nvs_open("config", NVS_READONLY, &nvs_handle);
@@ -207,11 +183,9 @@ bool send_config_response(void)
         return false;
     }
 
-    // Construct MQTT topic
     char response_topic[128];
     snprintf(response_topic, sizeof(response_topic), "BlackBox/%s/%s/ConfigResponse", username, DEVICE_MAC);
 
-    // Send response
     int msg_id = esp_mqtt_client_publish(mqtt_client, response_topic, "1", 1, 0, 0);
     if (msg_id == -1)
     {
@@ -250,7 +224,7 @@ void send_control_signal(bool start)
     snprintf(topic, sizeof(topic), "BlackBox/%s/%s/Control", username, DEVICE_MAC);
     esp_mqtt_client_publish(mqtt_client, topic, start ? "1" : "0", 1, 1, 0);
 }
-// Modify the existing mqtt_event_handler to handle pin verification response
+
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
@@ -289,150 +263,137 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT Disconnected");
         mqtt_connected = 0;
-        // Nie ustawiamy mqtt_client na NULL
-        // Pozwalamy zadaniu mqtt_task zająć się reconnectem
         break;
 
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT Error");
         mqtt_connected = 0;
-        // Podobnie tutaj
         break;
 
     case MQTT_EVENT_DATA:
-        // Handle PIN verification response
+    {
+        char topic[128];
+        memcpy(topic, event->topic, event->topic_len);
+        topic[event->topic_len] = '\0';
+
+        if (strstr(topic, "/Response") != NULL)
         {
-            char topic[128];
-            memcpy(topic, event->topic, event->topic_len);
-            topic[event->topic_len] = '\0';
+            char payload[event->data_len + 1];
+            memcpy(payload, event->data, event->data_len);
+            payload[event->data_len] = '\0';
 
-            // Check if this is a response topic
-            if (strstr(topic, "/Response") != NULL)
+            if (strcmp(payload, "1") == 0)
             {
-                // Parse response
-                char payload[event->data_len + 1];
-                memcpy(payload, event->data, event->data_len);
-                payload[event->data_len] = '\0';
-
-                // Set verification based on "1" or "0"
-                if (strcmp(payload, "1") == 0)
-                {
-                    pin_verified = true;
-                }
-                else
-                {
-                    pin_verified = false;
-                }
-
-                response_received = true;
+                pin_verified = true;
             }
-            if (strstr(topic, "/Config") != NULL)
+            else
             {
-                ESP_LOGI(TAG, "GOT CONFIG TOPIC");
-                char payload[event->data_len + 1];
-                memcpy(payload, event->data, event->data_len);
-                payload[event->data_len] = '\0';
+                pin_verified = false;
+            }
 
-                cJSON *config = cJSON_Parse(payload);
-                if (config == NULL)
+            response_received = true;
+        }
+        if (strstr(topic, "/Config") != NULL)
+        {
+            ESP_LOGI(TAG, "GOT CONFIG TOPIC");
+            char payload[event->data_len + 1];
+            memcpy(payload, event->data, event->data_len);
+            payload[event->data_len] = '\0';
+
+            cJSON *config = cJSON_Parse(payload);
+            if (config == NULL)
+            {
+                ESP_LOGE(TAG, "Failed to parse config JSON");
+                return;
+            }
+
+            ESP_LOGI(TAG, "Received config: %s", payload);
+
+            nvs_handle_t nvs_handle;
+            esp_err_t err = nvs_open("config", NVS_READWRITE, &nvs_handle);
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Error opening NVS handle");
+                cJSON_Delete(config);
+                return;
+            }
+
+            struct
+            {
+                const char *key;
+                cJSON *value;
+            } config_items[] = {
+                {"gyro", cJSON_GetObjectItem(config, "gyro")},
+                {"acce", cJSON_GetObjectItem(config, "acce")},
+                {"dlpf", cJSON_GetObjectItem(config, "dlpf")},
+                {"osrs_p", cJSON_GetObjectItem(config, "osrs_p")},
+                {"osrs_t", cJSON_GetObjectItem(config, "osrs_t")},
+                {"filter", cJSON_GetObjectItem(config, "filter")},
+                {"interval", cJSON_GetObjectItem(config, "interval")},
+                {NULL, NULL}};
+
+            bool config_valid = true;
+            for (int i = 0; config_items[i].key != NULL; i++)
+            {
+                cJSON *item = config_items[i].value;
+                if (item && item->valuestring)
                 {
-                    ESP_LOGE(TAG, "Failed to parse config JSON");
-                    return;
-                }
+                    char *endptr;
+                    int32_t value = (int32_t)strtol(item->valuestring, &endptr, 10);
 
-                ESP_LOGI(TAG, "Received config: %s", payload);
-
-                nvs_handle_t nvs_handle;
-                esp_err_t err = nvs_open("config", NVS_READWRITE, &nvs_handle);
-                if (err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Error opening NVS handle");
-                    cJSON_Delete(config);
-                    return;
-                }
-
-                // Struktura do przechowywania konfiguracji
-                struct
-                {
-                    const char *key;
-                    cJSON *value;
-                } config_items[] = {
-                    {"cargo_type", cJSON_GetObjectItem(config, "cargo_type")},
-                    {"position_req", cJSON_GetObjectItem(config, "position_req")},
-                    {"transport_type", cJSON_GetObjectItem(config, "transport_type")},
-                    {"duration", cJSON_GetObjectItem(config, "duration")},
-                    {"osrs_p", cJSON_GetObjectItem(config, "osrs_p")},
-                    {"osrs_t", cJSON_GetObjectItem(config, "osrs_t")},
-                    {"filter", cJSON_GetObjectItem(config, "filter")},
-                    {"interval", cJSON_GetObjectItem(config, "interval")},
-                    {NULL, NULL} // Znacznik końca tablicy
-                };
-
-                // Zapisz wszystkie wartości do NVS
-                bool config_valid = true;
-                for (int i = 0; config_items[i].key != NULL; i++)
-                {
-                    cJSON *item = config_items[i].value;
-                    if (item && item->valuestring) // Sprawdzamy czy jest to string
+                    if (*endptr == '\0')
                     {
-                        // Konwertujemy string na int
-                        char *endptr;
-                        int32_t value = (int32_t)strtol(item->valuestring, &endptr, 10);
-
-                        // Sprawdzamy czy konwersja się udała i czy wartość jest poprawna
-                        if (*endptr == '\0') // Sprawdzamy czy cały string został przekonwertowany
+                        err = nvs_set_i32(nvs_handle, config_items[i].key, value);
+                        if (err != ESP_OK)
                         {
-                            err = nvs_set_i32(nvs_handle, config_items[i].key, value);
-                            if (err != ESP_OK)
-                            {
-                                ESP_LOGE(TAG, "Failed to save %s to NVS", config_items[i].key);
-                                config_valid = false;
-                                break;
-                            }
-                            ESP_LOGI(TAG, "Saved %s: %ld", config_items[i].key, (long)value);
-                        }
-                        else
-                        {
-                            ESP_LOGE(TAG, "Invalid number format for %s", config_items[i].key);
+                            ESP_LOGE(TAG, "Failed to save %s to NVS", config_items[i].key);
                             config_valid = false;
                             break;
                         }
+                        ESP_LOGI(TAG, "Saved %s: %ld", config_items[i].key, (long)value);
                     }
                     else
                     {
-                        ESP_LOGE(TAG, "Missing or invalid value for %s", config_items[i].key);
+                        ESP_LOGE(TAG, "Invalid number format for %s", config_items[i].key);
                         config_valid = false;
                         break;
                     }
                 }
-
-                if (config_valid)
+                else
                 {
-                    err = nvs_commit(nvs_handle);
-                    if (err == ESP_OK)
-                    {
-                        ESP_LOGI(TAG, "Configuration saved successfully");
-                        config_received = true;
-                    }
-                    else
-                    {
-                        ESP_LOGE(TAG, "Failed to commit NVS changes");
-                    }
+                    ESP_LOGE(TAG, "Missing or invalid value for %s", config_items[i].key);
+                    config_valid = false;
+                    break;
                 }
+            }
 
-                nvs_close(nvs_handle);
-                cJSON_Delete(config);
-                if (send_config_response())
+            if (config_valid)
+            {
+                err = nvs_commit(nvs_handle);
+                if (err == ESP_OK)
                 {
-                    ESP_LOGI(TAG, "Config response sent");
+                    ESP_LOGI(TAG, "Configuration saved successfully");
+                    config_received = true;
                 }
                 else
                 {
-                    ESP_LOGE(TAG, "Failed to send config response");
+                    ESP_LOGE(TAG, "Failed to commit NVS changes");
                 }
             }
+
+            nvs_close(nvs_handle);
+            cJSON_Delete(config);
+            if (send_config_response())
+            {
+                ESP_LOGI(TAG, "Config response sent");
+            }
+            else
+            {
+                ESP_LOGE(TAG, "Failed to send config response");
+            }
         }
-        break;
+    }
+    break;
 
     default:
         break;
@@ -442,7 +403,6 @@ static void start_mqtt_client(void)
 {
     ESP_LOGI(TAG, "Starting mqtt client");
 
-    // Jeśli klient istnieje, najpierw go wyczyść
     if (mqtt_client != NULL)
     {
         ESP_LOGI(TAG, "Mqtt client is null ,destroying and stopping....");
@@ -450,7 +410,7 @@ static void start_mqtt_client(void)
         esp_mqtt_client_stop(mqtt_client);
         esp_mqtt_client_destroy(mqtt_client);
         mqtt_client = NULL;
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Daj czas na cleanup
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     nvs_handle_t nvs_handle;
@@ -477,9 +437,8 @@ static void start_mqtt_client(void)
         .broker.address.uri = broker_url,
         .credentials.username = "mqtt",
         .credentials.authentication.password = "MosquitoBroker",
-        .network.reconnect_timeout_ms = 10000,  // timeout 10 sekund
-        .network.disable_auto_reconnect = false // włącz auto-reconnect
-    };
+        .network.reconnect_timeout_ms = 10000,
+        .network.disable_auto_reconnect = false};
 
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     if (mqtt_client == NULL)
@@ -492,7 +451,7 @@ static void start_mqtt_client(void)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Client register event failed");
-        esp_mqtt_client_destroy(mqtt_client); // Wyczyść klienta jeśli rejestracja nie powiodła się
+        esp_mqtt_client_destroy(mqtt_client);
         mqtt_client = NULL;
         return;
     }
@@ -501,7 +460,7 @@ static void start_mqtt_client(void)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Client start failed");
-        esp_mqtt_client_destroy(mqtt_client); // Wyczyść klienta jeśli start nie powiódł się
+        esp_mqtt_client_destroy(mqtt_client);
         mqtt_client = NULL;
         return;
     }

@@ -72,7 +72,7 @@ int ky026_read_raw_analog(void)
 int ky026_read_voltage(void)
 {
     int raw_value = read_raw_adc();
-    return (raw_value * 3300) / 4095; // dla 12-bit ADC
+    return (raw_value * 3300) / 4095;
 }
 
 void ky026_print_diagnostics(void)

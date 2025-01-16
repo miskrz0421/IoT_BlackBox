@@ -25,36 +25,32 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
     if (event_id == WIFI_EVENT_STA_START)
     {
         ESP_LOGI(WIFI_TAG, "WIFI CONNECTING....\n");
-        wifi_connecting = true;
-        // vTaskDelay(pdMS_TO_TICKS(2500));
     }
     else if (event_id == WIFI_EVENT_STA_CONNECTED)
     {
         ESP_LOGI(WIFI_TAG, "WiFi CONNECTED\n");
         wifi_connected = true;
-        wifi_connecting = false;
+    }
+    else if (event_id == WIFI_EVENT_AP_STOP)
+    {
+        ESP_LOGE(WIFI_TAG, "WiFi STOP\n\n");
+        wifi_stop();
     }
     else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
+        ESP_LOGE(WIFI_TAG, "WiFi DISCONNECTED\n\n");
 
-        // if (ble_enabled())
-        // {
-        //     return;
-        // }
-
-        if (wifi_connected)
-            wifi_stop();
-        wifi_connected = false;
-        // esp_wifi_connect();
-        wifi_connecting = false;
-        // ESP_LOGI(WIFI_TAG, "Retrying to Connect...(%d)\n", retry_num);
+        wifi_stop();
     }
     else if (event_id == IP_EVENT_STA_GOT_IP)
     {
         ESP_LOGI(WIFI_TAG, "WiFi got IP...\n\n");
         vTaskDelay(pdMS_TO_TICKS(400));
         wifi_connected = true;
-        wifi_connecting = false;
+    }
+    else
+    {
+        ESP_LOGI(WIFI_TAG, "WiFi ELSE %ld\n\n", event_id);
     }
 }
 
@@ -75,6 +71,7 @@ void wifi_connection()
         {
             ESP_LOGE(WIFI_TAG, "Error reading SSID from NVS");
             nvs_close(nvs_handle);
+            wifi_connecting = false;
             return;
         }
         err = nvs_get_str(nvs_handle, "password", password, &pass_len);
@@ -82,6 +79,7 @@ void wifi_connection()
         {
             ESP_LOGE(WIFI_TAG, "Error reading password from NVS");
             nvs_close(nvs_handle);
+            wifi_connecting = false;
             return;
         }
         nvs_close(nvs_handle);
@@ -117,7 +115,16 @@ void wifi_stop(void)
 
     if (wifi_connected)
     {
-        ESP_ERROR_CHECK(esp_wifi_disconnect());
+        esp_err_t err = esp_wifi_disconnect();
+        switch (err)
+        {
+        case ESP_OK:
+            printf("ESP_OK: Operation completed successfully\n");
+            break;
+        default:
+            printf("Unknown error: 0x%x\n", err);
+            return;
+        }
     }
 
     ESP_ERROR_CHECK(esp_wifi_stop());
@@ -134,6 +141,7 @@ void wifi_stop(void)
     }
 
     wifi_connected = false;
+    wifi_connecting = false;
 
     ESP_LOGI(WIFI_TAG, "WiFi stopped successfully");
 }

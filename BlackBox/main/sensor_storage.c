@@ -6,11 +6,10 @@
 
 static const char *TAG = "SENSOR_STORAGE";
 
-// Na początku pliku, pod definicją TAG
 static uint32_t base_timestamp = 0;
 static uint64_t start_time_us = 0;
+static bool is_sntp_initialized = false;
 
-// Funkcja do pobierania aktualnego timestampa
 static uint32_t get_current_timestamp(void)
 {
     uint64_t elapsed_time_us = esp_timer_get_time() - start_time_us;
@@ -18,22 +17,36 @@ static uint32_t get_current_timestamp(void)
     return base_timestamp + elapsed_seconds;
 }
 
-esp_err_t init_time_once()
+esp_err_t init_time_once(void)
 {
+    if (is_sntp_initialized)
+    {
+        ESP_LOGI(TAG, "SNTP already initialized");
+        return ESP_OK;
+    }
+
     setenv("TZ", "CET-1", 1);
     tzset();
 
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
+
+    is_sntp_initialized = true;
+    ESP_LOGI(TAG, "SNTP server initialized");
     return ESP_OK;
 }
 
-// Nowa funkcja inicjalizująca czas
 esp_err_t init_storage_time(void)
 {
-    // Ustawienie strefy czasowej dla Polski (czas zimowy UTC+1)
-    // Czekamy na synchronizację
+    if (!is_sntp_initialized)
+    {
+        ESP_LOGE(TAG, "SNTP not initialized. Call init_time_once first");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_sntp_restart();
+
     int retry = 0;
     const int max_retry = 30;
 
@@ -49,32 +62,26 @@ esp_err_t init_storage_time(void)
         return ESP_FAIL;
     }
 
-    // Pobierz czas UNIX
     time_t now;
     time(&now);
     base_timestamp = (uint32_t)now;
 
-    // Zapisz początkowy czas lokalnego timera
     start_time_us = esp_timer_get_time();
 
     ESP_LOGI(TAG, "Time synchronized. Base timestamp: %lu", base_timestamp);
-
     return ESP_OK;
 }
 
-// Global storage instances
 mpu6050_storage_t mpu6050_storage = {0};
 bmp280_storage_t bmp280_storage = {0};
 ky026_storage_t ky026_storage = {0};
 
 esp_err_t init_sensor_storage(void)
 {
-    // Calculate buffer sizes based on structure sizes
     size_t mpu6050_count = MPU6050_STORAGE_SIZE / sizeof(mpu6050_reading_t);
     size_t bmp280_count = BMP280_STORAGE_SIZE / sizeof(bmp280_reading_t);
     size_t ky026_count = FLAME_STORAGE_SIZE / sizeof(ky026_reading_t);
 
-    // Allocate PSRAM for MPU6050
     mpu6050_storage.buffer = heap_caps_malloc(MPU6050_STORAGE_SIZE, MALLOC_CAP_SPIRAM);
     if (mpu6050_storage.buffer == NULL)
     {
@@ -85,7 +92,6 @@ esp_err_t init_sensor_storage(void)
     mpu6050_storage.count = 0;
     mpu6050_storage.write_index = 0;
 
-    // Allocate PSRAM for BMP280
     bmp280_storage.buffer = heap_caps_malloc(BMP280_STORAGE_SIZE, MALLOC_CAP_SPIRAM);
     if (bmp280_storage.buffer == NULL)
     {
@@ -97,7 +103,6 @@ esp_err_t init_sensor_storage(void)
     bmp280_storage.count = 0;
     bmp280_storage.write_index = 0;
 
-    // Allocate PSRAM for KY026
     ky026_storage.buffer = heap_caps_malloc(FLAME_STORAGE_SIZE, MALLOC_CAP_SPIRAM);
     if (ky026_storage.buffer == NULL)
     {
@@ -134,7 +139,6 @@ void free_sensor_storage(void)
     }
 }
 
-// MPU6050 functions
 esp_err_t store_mpu6050_reading(float accel_x, float accel_y, float accel_z,
                                 float gyro_x, float gyro_y, float gyro_z)
 {
@@ -152,7 +156,6 @@ esp_err_t store_mpu6050_reading(float accel_x, float accel_y, float accel_z,
         .gyro_y = gyro_y,
         .gyro_z = gyro_z};
 
-    // Store reading in circular buffer
     mpu6050_storage.buffer[mpu6050_storage.write_index] = reading;
     mpu6050_storage.write_index = (mpu6050_storage.write_index + 1) % mpu6050_storage.capacity;
 
@@ -164,7 +167,6 @@ esp_err_t store_mpu6050_reading(float accel_x, float accel_y, float accel_z,
     return ESP_OK;
 }
 
-// BMP280 functions
 esp_err_t store_bmp280_reading(float temperature, float pressure, float normalized_pressure)
 {
     if (!bmp280_storage.buffer)
@@ -189,7 +191,6 @@ esp_err_t store_bmp280_reading(float temperature, float pressure, float normaliz
     return ESP_OK;
 }
 
-// KY026 functions
 esp_err_t store_ky026_reading(uint8_t digital_value, uint16_t analog_value, uint16_t voltage)
 {
     if (!ky026_storage.buffer)
@@ -214,7 +215,6 @@ esp_err_t store_ky026_reading(uint8_t digital_value, uint16_t analog_value, uint
     return ESP_OK;
 }
 
-// Getter functions
 const mpu6050_reading_t *get_mpu6050_readings(size_t *count)
 {
     if (count)
