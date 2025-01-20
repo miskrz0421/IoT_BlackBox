@@ -26,7 +26,7 @@
 #define BOOT_BUTTON GPIO_NUM_0
 
 #define MPU6050_INTERVAL 1
-#define KY026_INTERVAL 1
+#define KY026_INTERVAL 5
 
 #define LOCATION_ALTITUDE 200.0
 
@@ -208,16 +208,26 @@ static void configure_ledYellow(void)
 
 static void led_blink_task(void *pvParameter)
 {
-    bool led_state = false;
-
     ESP_LOGI(TAG, "Start zadania migania LED");
 
     while (1)
     {
-        if (dev_state == -1)
+        if (ble_enabled())
         {
-            led_state = !led_state;
-            gpio_set_level(LED_PIN, led_state);
+
+            gpio_set_level(LED_PIN, 1);
+        }
+        else
+        {
+            gpio_set_level(LED_PIN, 0);
+        }
+        if (wifi_connected && mqtt_connected)
+        {
+            gpio_set_level(LED_GREEN, 1);
+        }
+        else
+        {
+            gpio_set_level(LED_GREEN, 0);
         }
 
         vTaskDelay(pdMS_TO_TICKS(BLINK_DELAY_MS));
@@ -270,6 +280,9 @@ static void mpu6050_task(void *pvParameters)
     float prev_gyro_x = 0.0f;
     float prev_gyro_y = 0.0f;
     float prev_gyro_z = 0.0f;
+    float base_threshold_a = 0.05f;
+    float scaling_factor = 0.01f;
+    float base_threshold_v = 2.5f;
     bool first_reading = true;
 
     while (1)
@@ -354,14 +367,12 @@ static void mpu6050_task(void *pvParameters)
             bool should_store = first_reading;
             if (!first_reading)
             {
-                float threshold = 0.90f;
-                should_store = (fabsf(fabsf(acce.acce_x) - fabsf(prev_acce_x)) > fabsf(fabsf(prev_acce_x) * threshold)) ||
-                               (fabsf(fabsf(acce.acce_y) - fabsf(prev_acce_y)) > fabsf(fabsf(prev_acce_y) * threshold)) ||
-                               (fabsf(fabsf(acce.acce_z) - fabsf(prev_acce_z)) > fabsf(fabsf(prev_acce_z) * threshold));
-
-                //    (fabsf(fabsf(gyro.gyro_x) - fabsf(prev_gyro_x)) > fabsf(fabsf(prev_gyro_x) * threshold)) ||
-                //    (fabsf(fabsf(gyro.gyro_y) - fabsf(prev_gyro_y)) > fabsf(fabsf(prev_gyro_y) * threshold)) ||
-                //    (fabsf(fabsf(gyro.gyro_z) - fabsf(prev_gyro_z)) > fabsf(fabsf(prev_gyro_z) * threshold))
+                should_store = (fabsf(fabsf(acce.acce_x) - fabsf(prev_acce_x)) > (base_threshold_a + scaling_factor * fabsf(acce.acce_x)) ||
+                                fabsf(fabsf(acce.acce_y) - fabsf(prev_acce_y)) > (base_threshold_a + scaling_factor * fabsf(acce.acce_y)) ||
+                                fabsf(fabsf(acce.acce_z) - fabsf(prev_acce_z)) > (base_threshold_a + scaling_factor * fabsf(acce.acce_z)) ||
+                                fabsf(fabsf(gyro.gyro_x) - fabsf(prev_gyro_x)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_x)) ||
+                                fabsf(fabsf(gyro.gyro_y) - fabsf(prev_gyro_y)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_y)) ||
+                                fabsf(fabsf(gyro.gyro_z) - fabsf(prev_gyro_z)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_z)));
                 // printf("%f - %f > %f * %f\n", acce.acce_x, prev_acce_x, prev_acce_x, threshold);
                 // printf("%f > %lf\n", fabsf(fabsf(acce.acce_x) - fabsf(prev_acce_x)), fabsf(fabsf(prev_acce_x) * threshold));
                 // printf("%f - %f > %f * %f\n", acce.acce_y, prev_acce_y, prev_acce_y, threshold);
@@ -692,7 +703,7 @@ static void boot_button_task(void *pvParameters)
                 for (int i = 0; i < 10; i++)
                 {
                     led_state = !led_state;
-                    gpio_set_level(LED_GREEN, led_state);
+                    gpio_set_level(LED_YELLOW, led_state);
                     vTaskDelay(pdMS_TO_TICKS(50));
                 }
             }
@@ -916,6 +927,9 @@ static void wifi_task(void *pvParameters)
                         }
 
                         send_control_signal(false);
+                        free((void *)mpu_data);
+                        free((void *)bmp_data);
+                        free((void *)ky026_data);
                         yellow_led = false;
 
                         free_sensor_storage();
@@ -986,7 +1000,7 @@ static void led_ble_task(void *pvParameters)
         .strip_gpio_num = LED_BUILTIN,
         .max_leds = 1,
         .led_model = LED_MODEL_WS2812,
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_RGBW,
         .flags = {
             .invert_out = false,
         }};
@@ -1005,22 +1019,35 @@ static void led_ble_task(void *pvParameters)
 
     while (1)
     {
-        if (ble_enabled())
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (dev_state == -1)
         {
-            led_strip_set_pixel(led_strip, 0, 0, 0, 150);
+            led_strip_set_pixel(led_strip, 0, 60, 255, 0);
             led_strip_refresh(led_strip);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-
-            led_strip_set_pixel(led_strip, 0, 0, 0, 0);
-            led_strip_refresh(led_strip);
-            vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        else
+        else if (dev_state == 0)
         {
-            led_strip_set_pixel(led_strip, 0, 0, 0, 0);
+            led_strip_set_pixel(led_strip, 0, 200, 0, 170);
             led_strip_refresh(led_strip);
-            vTaskDelay(pdMS_TO_TICKS(100));
         }
+        else if (dev_state == 1)
+        {
+            led_strip_set_pixel(led_strip, 0, 255, 255, 0);
+            led_strip_refresh(led_strip);
+        }
+        else if (dev_state == 2)
+        {
+            led_strip_set_pixel(led_strip, 0, 255, 0, 0);
+            led_strip_refresh(led_strip);
+        }
+        else if (dev_state == 3)
+        {
+            led_strip_set_pixel(led_strip, 0, 50, 240, 230);
+            led_strip_refresh(led_strip);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        led_strip_set_pixel(led_strip, 0, 0, 0, 0);
+        led_strip_refresh(led_strip);
     }
 }
 
