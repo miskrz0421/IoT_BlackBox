@@ -26,7 +26,7 @@
 #define BOOT_BUTTON GPIO_NUM_0
 
 #define MPU6050_INTERVAL 1
-#define KY026_INTERVAL 5
+#define KY026_INTERVAL 3
 
 #define LOCATION_ALTITUDE 200.0
 
@@ -62,6 +62,7 @@ extern bool got_pin;
 extern bool got_time = false;
 bool verified = false;
 bool yellow_led = false;
+bool lost_power_during_travel = false;
 static esp_err_t init_i2c(void)
 {
     i2c_config_t conf = {
@@ -357,7 +358,7 @@ static void mpu6050_task(void *pvParameters)
             sensor_configured = true;
             first_reading = true;
         }
-        if (is_recording && got_time)
+        if (is_recording && got_time && !lost_power_during_travel)
         {
             mpu6050_acce_value_t acce;
             mpu6050_gyro_value_t gyro;
@@ -373,18 +374,6 @@ static void mpu6050_task(void *pvParameters)
                                 fabsf(fabsf(gyro.gyro_x) - fabsf(prev_gyro_x)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_x)) ||
                                 fabsf(fabsf(gyro.gyro_y) - fabsf(prev_gyro_y)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_y)) ||
                                 fabsf(fabsf(gyro.gyro_z) - fabsf(prev_gyro_z)) > (base_threshold_v + scaling_factor * fabsf(gyro.gyro_z)));
-                // printf("%f - %f > %f * %f\n", acce.acce_x, prev_acce_x, prev_acce_x, threshold);
-                // printf("%f > %lf\n", fabsf(fabsf(acce.acce_x) - fabsf(prev_acce_x)), fabsf(fabsf(prev_acce_x) * threshold));
-                // printf("%f - %f > %f * %f\n", acce.acce_y, prev_acce_y, prev_acce_y, threshold);
-                // printf("%f > %lf\n", fabsf(fabsf(acce.acce_y) - fabsf(prev_acce_y)), fabsf(fabsf(prev_acce_y) * threshold));
-                // printf("%f - %f > %f * %f\n", acce.acce_z, prev_acce_z, prev_acce_z, threshold);
-                // printf("%f > %lf\n", fabsf(fabsf(acce.acce_z) - fabsf(prev_acce_z)), fabsf(fabsf(prev_acce_z) * threshold));
-                // printf("%f - %f > %f * %f\n", gyro.gyro_x, prev_gyro_x, prev_gyro_x, threshold);
-                // printf("%f > %lf\n", fabsf(fabsf(gyro.gyro_x) - fabsf(prev_gyro_x)), fabsf(fabsf(prev_gyro_x) * threshold));
-                // printf("%f - %f > %f * %f\n", gyro.gyro_y, prev_gyro_y, prev_gyro_y, threshold);
-                // printf("%f > %lf \n", fabsf(fabsf(gyro.gyro_y) - fabsf(prev_gyro_y)), fabsf(fabsf(prev_gyro_y) * threshold));
-                // printf("%f - %f > %f * %f\n", gyro.gyro_z, prev_gyro_z, prev_gyro_z, threshold);
-                // printf("%f > %lf\n", fabsf(fabsf(gyro.gyro_z) - fabsf(prev_gyro_z)), fabsf(fabsf(prev_gyro_z) * threshold));
             }
 
             if (should_store)
@@ -497,7 +486,7 @@ static void bmp280_task(void *pvParameters)
             sensor_configured = true;
         }
 
-        if (is_recording && sensor_configured && got_time)
+        if (is_recording && sensor_configured && got_time && !lost_power_during_travel)
         {
             float temperature, pressure;
             err = bmp280_read_measurements(&temperature, &pressure);
@@ -532,13 +521,13 @@ static void ky026_task(void *pvParameters)
 
     while (1)
     {
-        if (is_recording && got_time)
+        if (is_recording && got_time && !lost_power_during_travel)
         {
             int digital_val = ky026_read_digital();
             int voltage = ky026_read_voltage();
             int raw = ky026_read_raw_analog();
 
-            ESP_LOGI(TAG, "[KY026] Digital: %d,Raw: %d, Analog: %d mV, Flame %s",
+            ESP_LOGI(TAG, "[KY026] Digital: %d,Raw: %d, Analog: %d mV, Light %s",
                      digital_val,
                      raw,
                      voltage,
@@ -595,8 +584,10 @@ void button_task(void *pvParameters)
                     }
 
                     free_sensor_storage();
+                    clear_sensor_storage();
                     vTaskDelay(pdMS_TO_TICKS(200));
                     init_sensor_storage();
+                    lost_power_during_travel = false;
 
                     ret = nvs_flash_init();
                     if (ret != ESP_OK)
@@ -847,10 +838,11 @@ static void wifi_task(void *pvParameters)
                     if (dev_state == 3)
                     {
                         size_t mpu_count = 0, bmp_count = 0, ky026_count = 0;
+                        send_control_signal(true);
+                        yellow_led = true;
+                        bool led_state = 0;
 
                         const mpu6050_reading_t *mpu_data = get_mpu6050_readings(&mpu_count);
-                        const bmp280_reading_t *bmp_data = get_bmp280_readings(&bmp_count);
-                        const ky026_reading_t *ky026_data = get_ky026_readings(&ky026_count);
 
                         ESP_LOGI(TAG, "-------- ZAPISANE DANE --------");
                         ESP_LOGI(TAG, "MPU6050 - liczba pomiarow: %zu", mpu_count);
@@ -863,32 +855,6 @@ static void wifi_task(void *pvParameters)
                                      mpu_data[i].gyro_x, mpu_data[i].gyro_y, mpu_data[i].gyro_z);
                         }
 
-                        ESP_LOGI(TAG, "BMP280 - liczba pomiarow: %zu", bmp_count);
-                        for (size_t i = 0; i < bmp_count; i++)
-                        {
-                            ESP_LOGI(TAG, "[%zu] %s temp:%.2f press:%.2f norm_press:%.2f",
-                                     i,
-                                     print_timestamp(bmp_data[i].timestamp),
-                                     bmp_data[i].temperature,
-                                     bmp_data[i].pressure,
-                                     bmp_data[i].normalized_pressure);
-                        }
-
-                        ESP_LOGI(TAG, "KY026 - liczba pomiarow: %zu", ky026_count);
-                        for (size_t i = 0; i < ky026_count; i++)
-                        {
-                            ESP_LOGI(TAG, "[%zu] %s digital:%u analog:%u voltage:%u",
-                                     i,
-                                     print_timestamp(ky026_data[i].timestamp),
-                                     ky026_data[i].digital_value,
-                                     ky026_data[i].analog_value,
-                                     ky026_data[i].voltage);
-                        }
-                        ESP_LOGI(TAG, "-------- KONIEC DANYCH --------");
-
-                        yellow_led = true;
-                        send_control_signal(true);
-                        bool led_state = 0;
                         for (size_t i = 0; i < mpu_count; i++)
                         {
                             char *json = create_mpu6050_json(&mpu_data[i]);
@@ -899,6 +865,20 @@ static void wifi_task(void *pvParameters)
                                 free(json);
                                 vTaskDelay(pdMS_TO_TICKS(10));
                             }
+                        }
+                        free((void *)mpu_data);
+
+                        const bmp280_reading_t *bmp_data = get_bmp280_readings(&bmp_count);
+
+                        ESP_LOGI(TAG, "BMP280 - liczba pomiarow: %zu", bmp_count);
+                        for (size_t i = 0; i < bmp_count; i++)
+                        {
+                            ESP_LOGI(TAG, "[%zu] %s temp:%.2f press:%.2f norm_press:%.2f",
+                                     i,
+                                     print_timestamp(bmp_data[i].timestamp),
+                                     bmp_data[i].temperature,
+                                     bmp_data[i].pressure,
+                                     bmp_data[i].normalized_pressure);
                         }
 
                         for (size_t i = 0; i < bmp_count; i++)
@@ -911,6 +891,21 @@ static void wifi_task(void *pvParameters)
                                 free(json);
                                 vTaskDelay(pdMS_TO_TICKS(10));
                             }
+                        }
+
+                        free((void *)bmp_data);
+
+                        const ky026_reading_t *ky026_data = get_ky026_readings(&ky026_count);
+
+                        ESP_LOGI(TAG, "KY026 - liczba pomiarow: %zu", ky026_count);
+                        for (size_t i = 0; i < ky026_count; i++)
+                        {
+                            ESP_LOGI(TAG, "[%zu] %s digital:%u analog:%u voltage:%u",
+                                     i,
+                                     print_timestamp(ky026_data[i].timestamp),
+                                     ky026_data[i].digital_value,
+                                     ky026_data[i].analog_value,
+                                     ky026_data[i].voltage);
                         }
 
                         for (size_t i = 0; i < ky026_count; i++)
@@ -926,13 +921,14 @@ static void wifi_task(void *pvParameters)
                             }
                         }
 
-                        send_control_signal(false);
-                        free((void *)mpu_data);
-                        free((void *)bmp_data);
                         free((void *)ky026_data);
-                        yellow_led = false;
+                        ESP_LOGI(TAG, "-------- KONIEC DANYCH --------");
 
+                        send_control_signal(false);
+                        yellow_led = false;
+                        lost_power_during_travel = false;
                         free_sensor_storage();
+                        clear_sensor_storage();
                         vTaskDelay(pdMS_TO_TICKS(500));
                         gpio_set_level(LED_YELLOW, 0);
                         init_sensor_storage();
@@ -1062,22 +1058,14 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
     ESP_ERROR_CHECK(check_device_state());
+    if (dev_state == 2 || dev_state == 3)
+    {
+        lost_power_during_travel = true;
+    }
     ESP_LOGI(TAG, "Initializing I2C...");
     ESP_ERROR_CHECK(init_i2c());
     init_sensor_storage();
-    if (dev_state == 3)
-    {
-        esp_err_t err = save_device_state(DEVICE_STATE_CONFIGURING);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to save device state");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "Changed device state to %d", DEVICE_STATE_CONFIGURING);
-        }
-    }
-    else if (dev_state == 2)
+    if (dev_state == 2)
     {
         is_recording = true;
         got_time = true;
@@ -1116,14 +1104,14 @@ void app_main(void)
     xTaskCreate(
         led_blink_task,
         "led_blink_task",
-        2048,
+        4096,
         NULL,
         5,
         NULL);
     xTaskCreate(
         led_yellow_task,
         "led_yellow_task",
-        2048,
+        4096,
         NULL,
         5,
         NULL);
