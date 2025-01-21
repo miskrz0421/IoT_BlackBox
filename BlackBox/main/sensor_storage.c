@@ -8,8 +8,7 @@
 
 static const char *TAG = "SENSOR_STORAGE";
 
-volatile uint32_t BUFFER_FLUSH_THRESHOLD_PERCENT = 80;
-volatile uint32_t BUFFER_FLUSH_INTERVAL_SEC = 30; // 1800
+static const uint32_t BUFFER_FLUSH_THRESHOLD_PERCENT = 90;
 
 mpu6050_storage_t mpu6050_storage = {0};
 bmp280_storage_t bmp280_storage = {0};
@@ -93,7 +92,7 @@ static esp_err_t write_data_block(const void *data, size_t record_size,
         .magic_number = MAGIC_NUMBER,
         .block_type = block_type,
         .record_count = record_count,
-        // .timestamp = get_current_timestamp()
+
     };
 
     if (offset + BLOCK_SIZE > storage_partition->size)
@@ -110,6 +109,8 @@ static esp_err_t write_data_block(const void *data, size_t record_size,
                                         offset + sizeof(header),
                                         data,
                                         record_size * record_count));
+    ESP_LOGI(TAG, "Written data size: %lu",
+             record_size * record_count);
 
     ESP_LOGI(TAG, "Written block %lu, type %lu, records: %lu",
              block_number, block_type, record_count);
@@ -117,94 +118,48 @@ static esp_err_t write_data_block(const void *data, size_t record_size,
     return ESP_OK;
 }
 
-static bool should_flush_buffers(void)
+static bool should_flush_buffer(size_t count, size_t capacity, uint32_t *last_flush_time_sensor)
 {
-    uint64_t current_time = esp_timer_get_time() / 1000000;
+    ESP_LOGI(TAG, "Checking - count: %u, capacity: %u, percent filled: %u%%, threshold: %u%%",
+             (unsigned int)count,
+             (unsigned int)capacity,
+             (unsigned int)(count * 100 / capacity),
+             (unsigned int)BUFFER_FLUSH_THRESHOLD_PERCENT);
 
-    if (current_time - last_flush_time >= BUFFER_FLUSH_INTERVAL_SEC)
-    {
-        ESP_LOGI(TAG, "Flushing due to time interval (%lu seconds elapsed)",
-                 (uint32_t)(current_time - last_flush_time));
-        return true;
-    }
-
-    if (mpu6050_storage.count * 100 / mpu6050_storage.capacity >= BUFFER_FLUSH_THRESHOLD_PERCENT ||
-        bmp280_storage.count * 100 / bmp280_storage.capacity >= BUFFER_FLUSH_THRESHOLD_PERCENT ||
-        ky026_storage.count * 100 / ky026_storage.capacity >= BUFFER_FLUSH_THRESHOLD_PERCENT)
+    if (count * 100 / capacity >= BUFFER_FLUSH_THRESHOLD_PERCENT)
     {
         ESP_LOGI(TAG, "Flushing due to buffer threshold");
         return true;
     }
-
     return false;
 }
 
-static esp_err_t flush_buffers(void)
+static esp_err_t flush_buffer(void *buffer, size_t record_size,
+                              size_t *count, size_t *write_index,
+                              uint32_t block_type, uint32_t *block_count,
+                              uint32_t *last_flush_time_sensor)
 {
-    esp_err_t err;
-
-    if (mpu6050_storage.count > 0)
+    if (*count > 0)
     {
-        err = write_data_block(mpu6050_storage.buffer,
-                               sizeof(mpu6050_reading_t),
-                               mpu6050_storage.count,
-                               BLOCK_TYPE_MPU6050,
-                               mpu6050_storage.block_count++);
+        esp_err_t err = write_data_block(buffer,
+                                         record_size,
+                                         *count,
+                                         block_type,
+                                         (*block_count)++);
         if (err != ESP_OK)
         {
-            ESP_LOGE(TAG, "Failed to flush MPU6050 buffer");
+            ESP_LOGE(TAG, "Failed to flush buffer type %lu", block_type);
             return err;
         }
-        mpu6050_storage.count = 0;
-        mpu6050_storage.write_index = 0;
+        *count = 0;
+        *write_index = 0;
+        *last_flush_time_sensor = esp_timer_get_time() / 1000000;
     }
-
-    if (bmp280_storage.count > 0)
-    {
-        err = write_data_block(bmp280_storage.buffer,
-                               sizeof(bmp280_reading_t),
-                               bmp280_storage.count,
-                               BLOCK_TYPE_BMP280,
-                               bmp280_storage.block_count++);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to flush BMP280 buffer");
-            return err;
-        }
-        bmp280_storage.count = 0;
-        bmp280_storage.write_index = 0;
-    }
-
-    if (ky026_storage.count > 0)
-    {
-        err = write_data_block(ky026_storage.buffer,
-                               sizeof(ky026_reading_t),
-                               ky026_storage.count,
-                               BLOCK_TYPE_KY026,
-                               ky026_storage.block_count++);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to flush KY026 buffer");
-            return err;
-        }
-        ky026_storage.count = 0;
-        ky026_storage.write_index = 0;
-    }
-
-    last_flush_time = esp_timer_get_time() / 1000000;
     return ESP_OK;
 }
-static void check_and_flush_if_needed(void)
-{
-    if (should_flush_buffers())
-    {
-        esp_err_t err = flush_buffers();
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to flush buffers to flash");
-        }
-    }
-}
+static uint32_t last_flush_time_mpu6050 = 0;
+static uint32_t last_flush_time_bmp280 = 0;
+static uint32_t last_flush_time_ky026 = 0;
 
 esp_err_t init_sensor_storage(void)
 {
@@ -214,6 +169,8 @@ esp_err_t init_sensor_storage(void)
         ESP_LOGE(TAG, "Failed to find storage partition");
         return ESP_ERR_NOT_FOUND;
     }
+    ESP_LOGW(TAG, "PARTITION SIZE: %lu", storage_partition->size);
+    ESP_LOGW(TAG, "PARTITION ERASE SIZE: %lu", storage_partition->erase_size);
 
     size_t mpu6050_count = MPU6050_STORAGE_SIZE / sizeof(mpu6050_reading_t);
     size_t bmp280_count = BMP280_STORAGE_SIZE / sizeof(bmp280_reading_t);
@@ -328,7 +285,16 @@ esp_err_t store_mpu6050_reading(float accel_x, float accel_y, float accel_z,
         mpu6050_storage.count++;
     }
 
-    check_and_flush_if_needed();
+    if (should_flush_buffer(mpu6050_storage.count, mpu6050_storage.capacity, &last_flush_time_mpu6050))
+    {
+        flush_buffer(mpu6050_storage.buffer,
+                     sizeof(mpu6050_reading_t),
+                     &mpu6050_storage.count,
+                     &mpu6050_storage.write_index,
+                     BLOCK_TYPE_MPU6050,
+                     &mpu6050_storage.block_count,
+                     &last_flush_time_mpu6050);
+    }
     return ESP_OK;
 }
 
@@ -352,7 +318,16 @@ esp_err_t store_bmp280_reading(float temperature, float pressure, float normaliz
         bmp280_storage.count++;
     }
 
-    check_and_flush_if_needed();
+    if (should_flush_buffer(bmp280_storage.count, bmp280_storage.capacity, &last_flush_time_bmp280))
+    {
+        flush_buffer(bmp280_storage.buffer,
+                     sizeof(bmp280_reading_t),
+                     &bmp280_storage.count,
+                     &bmp280_storage.write_index,
+                     BLOCK_TYPE_BMP280,
+                     &bmp280_storage.block_count,
+                     &last_flush_time_bmp280);
+    }
     return ESP_OK;
 }
 
@@ -376,7 +351,16 @@ esp_err_t store_ky026_reading(uint8_t digital_value, uint16_t analog_value, uint
         ky026_storage.count++;
     }
 
-    check_and_flush_if_needed();
+    if (should_flush_buffer(ky026_storage.count, ky026_storage.capacity, &last_flush_time_ky026))
+    {
+        flush_buffer(ky026_storage.buffer,
+                     sizeof(ky026_reading_t),
+                     &ky026_storage.count,
+                     &ky026_storage.write_index,
+                     BLOCK_TYPE_KY026,
+                     &ky026_storage.block_count,
+                     &last_flush_time_ky026);
+    }
     return ESP_OK;
 }
 static esp_err_t read_blocks_from_flash(uint32_t block_type, void *buffer,

@@ -8,13 +8,12 @@
 #include "esp_sntp.h"
 #include "esp_timer.h"
 
-#define FLAME_STORAGE_SIZE (256 * 1024)
-#define MPU6050_STORAGE_SIZE (1 * 1024 * 1024)
-#define BMP280_STORAGE_SIZE (1 * 1024 * 1024)
+#define FLAME_STORAGE_SIZE 4096
+#define MPU6050_STORAGE_SIZE 4096
+#define BMP280_STORAGE_SIZE 4096
 
 #define MAGIC_NUMBER 0xABCD1234
 #define BLOCK_SIZE 4096
-#define MAX_FLASH_STORAGE_SIZE (8 * 1024 * 1024)
 
 #define BLOCK_TYPE_MPU6050 1
 #define BLOCK_TYPE_BMP280 2
@@ -25,7 +24,6 @@ typedef struct
     uint32_t magic_number;
     uint32_t block_type;
     uint32_t record_count;
-    // uint32_t timestamp;
 } block_header_t;
 
 typedef struct
@@ -81,9 +79,6 @@ typedef struct
     size_t write_index;
     uint32_t block_count;
 } ky026_storage_t;
-
-extern volatile uint32_t BUFFER_FLUSH_THRESHOLD_PERCENT;
-extern volatile uint32_t BUFFER_FLUSH_INTERVAL_SEC;
 
 extern mpu6050_storage_t mpu6050_storage;
 extern bmp280_storage_t bmp280_storage;

@@ -26,7 +26,7 @@
 #define BOOT_BUTTON GPIO_NUM_0
 
 #define MPU6050_INTERVAL 1
-#define KY026_INTERVAL 3
+#define KY026_INTERVAL 1
 
 #define LOCATION_ALTITUDE 200.0
 
@@ -795,7 +795,6 @@ static void wifi_task(void *pvParameters)
         {
             if (!wifi_connecting)
             {
-                ESP_LOGE(TAG, "WiFi CONNECTING MAIN\n\n");
                 wifi_connecting = true;
                 wifi_connection();
             }
