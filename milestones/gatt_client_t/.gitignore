@@ -1,0 +1,8 @@
+.devcontainer/
+.vscode/
+.venv/
+build/
+managed_components/
+sdkconfig*
+*.lock
+*.code-workspace
